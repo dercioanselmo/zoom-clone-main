@@ -1,13 +1,20 @@
+// components/MeetingRoom.tsx
 'use client';
 
 import { useEffect, useRef, useState, useContext } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useUser } from '@clerk/nextjs';
 import { Button } from './ui/button';
-import { Video, VideoOff, Mic, MicOff, Settings, Users, LogOut } from 'lucide-react';
+import { Users, Video, VideoOff, Mic, MicOff, Settings } from 'lucide-react';
 import { AgoraContext } from '@/providers/AgoraClientProvider';
 import Loader from './Loader';
 import { cn } from '@/lib/utils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 
 const MeetingRoom = ({
   channel,
@@ -17,6 +24,7 @@ const MeetingRoom = ({
   token: string;
 }) => {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user } = useUser();
   const { client } = useContext(AgoraContext)!;
   const [joined, setJoined] = useState(false);
@@ -24,39 +32,15 @@ const MeetingRoom = ({
   const [remoteUsers, setRemoteUsers] = useState<any[]>([]);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
-  const [cameraDevices, setCameraDevices] = useState<any[]>([]);
-  const [micDevices, setMicDevices] = useState<any[]>([]);
-  const [selectedCameraId, setSelectedCameraId] = useState<string | undefined>(undefined);
-  const [selectedMicId, setSelectedMicId] = useState<string | undefined>(undefined);
-  const [showSettings, setShowSettings] = useState(false);
+  const [devices, setDevices] = useState<{ cameras: MediaDeviceInfo[]; microphones: MediaDeviceInfo[] }>({
+    cameras: [],
+    microphones: [],
+  });
+  const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
+  const [selectedMicrophone, setSelectedMicrophone] = useState<string | null>(null);
+  const videoRefs = useRef<{ [uid: string]: HTMLDivElement | null }>({});
   const [showParticipants, setShowParticipants] = useState(false);
 
-  const videoRefs = useRef<{ [uid: string]: HTMLDivElement | null }>({});
-  const localVideoRef = useRef<HTMLDivElement>(null);
-
-  // Device enumeration
-  useEffect(() => {
-    let AgoraRTC: any;
-    const fetchDevices = async () => {
-      try {
-        const mod = await import('agora-rtc-sdk-ng');
-        AgoraRTC = mod.default;
-        const devices = await AgoraRTC.getDevices();
-        setCameraDevices(devices.filter((d: any) => d.kind === 'videoinput'));
-        setMicDevices(devices.filter((d: any) => d.kind === 'audioinput'));
-        if (!selectedCameraId && devices.find((d: any) => d.kind === 'videoinput')) {
-          setSelectedCameraId(devices.find((d: any) => d.kind === 'videoinput').deviceId);
-        }
-        if (!selectedMicId && devices.find((d: any) => d.kind === 'audioinput')) {
-          setSelectedMicId(devices.find((d: any) => d.kind === 'audioinput').deviceId);
-        }
-      } catch {}
-    };
-    fetchDevices();
-    // eslint-disable-next-line
-  }, []);
-
-  // Join and setup tracks - client-only!
   useEffect(() => {
     if (!client || !user) return;
 
@@ -64,42 +48,60 @@ const MeetingRoom = ({
     let localTracksInner: [any, any] = [null, null];
     let AgoraRTC: any;
 
+    const setupDevices = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cameras = devices.filter((device) => device.kind === 'videoinput');
+        const microphones = devices.filter((device) => device.kind === 'audioinput');
+        setDevices({ cameras, microphones });
+      } catch (err) {
+        console.error('Device enumeration failed:', err);
+      }
+    };
+
     const join = async () => {
       try {
         const mod = await import('agora-rtc-sdk-ng');
         AgoraRTC = mod.default;
-        if (isCameraOn && selectedCameraId) {
-          localTracksInner[1] = await AgoraRTC.createCameraVideoTrack({ cameraId: selectedCameraId });
-        } else {
-          localTracksInner[1] = null;
-        }
-        if (isMicOn && selectedMicId) {
-          localTracksInner[0] = await AgoraRTC.createMicrophoneAudioTrack({ microphoneId: selectedMicId });
-        } else {
-          localTracksInner[0] = null;
-        }
-        // Remove nulls for publish
-        const tracksToPublish = localTracksInner.filter(Boolean);
+
+        // Load state from localStorage
+        const savedState = JSON.parse(localStorage.getItem('meetingState') || '{}');
+        setIsCameraOn(savedState.isCameraOn ?? true);
+        setIsMicOn(savedState.isMicOn ?? true);
+        setSelectedCamera(savedState.selectedCamera || devices.cameras[0]?.deviceId || null);
+        setSelectedMicrophone(savedState.selectedMicrophone || devices.microphones[0]?.deviceId || null);
+
+        localTracksInner = await Promise.all([
+          savedState.isMicOn ? AgoraRTC.createMicrophoneAudioTrack({ microphoneId: savedState.selectedMicrophone }) : null,
+          savedState.isCameraOn ? AgoraRTC.createCameraVideoTrack({ cameraId: savedState.selectedCamera }) : null,
+        ]);
         setLocalTracks(localTracksInner);
 
         await client.join(process.env.NEXT_PUBLIC_AGORA_APP_ID!, channel, token, user.id);
+        const tracksToPublish = localTracksInner.filter((track) => track !== null);
         if (tracksToPublish.length) await client.publish(tracksToPublish);
         setJoined(true);
       } catch (e) {
-        // Handle error (optionally show toast)
         console.error('Agora join error:', e);
       }
     };
 
-    join();
+    setupDevices().then(() => {
+      if (devices.cameras.length && devices.microphones.length) {
+        setSelectedCamera(devices.cameras[0]?.deviceId || null);
+        setSelectedMicrophone(devices.microphones[0]?.deviceId || null);
+      }
+      join();
+    });
 
-    // remote user events
-    const handleUserPublished = async (remoteUser: any, mediaType: any) => {
+    const handleUserPublished = async (remoteUser: any, mediaType: 'audio' | 'video') => {
       await client.subscribe(remoteUser, mediaType);
-      setRemoteUsers(Array.from(client.remoteUsers));
+      setRemoteUsers([...client.remoteUsers]);
     };
     const handleUserLeft = () => {
-      setRemoteUsers(Array.from(client.remoteUsers));
+      setRemoteUsers([...client.remoteUsers]);
     };
 
     client.on('user-published', handleUserPublished);
@@ -114,73 +116,102 @@ const MeetingRoom = ({
       setLocalTracks(null);
       setRemoteUsers([]);
     };
-    // eslint-disable-next-line
-  }, [client, channel, token, user?.id, isCameraOn, isMicOn, selectedCameraId, selectedMicId]);
+  }, [client, channel, token, user?.id]);
 
-  // Play local video
   useEffect(() => {
-    if (localTracks && user?.id && videoRefs.current[user.id] && localTracks[1]) {
+    if (localTracks && user?.id && videoRefs.current[user.id] && isCameraOn && localTracks[1]) {
       localTracks[1].play(videoRefs.current[user.id]);
     }
-  }, [localTracks, user?.id]);
+  }, [localTracks, user?.id, isCameraOn]);
 
-  // Play remote videos
   useEffect(() => {
     remoteUsers.forEach((remoteUser) => {
-      if (
-        remoteUser.videoTrack &&
-        videoRefs.current[remoteUser.uid]
-      ) {
+      if (remoteUser.videoTrack && videoRefs.current[remoteUser.uid]) {
         remoteUser.videoTrack.play(videoRefs.current[remoteUser.uid]);
       }
     });
   }, [remoteUsers]);
 
-  // Toggle camera (on/off)
   const handleCameraToggle = async () => {
-    setIsCameraOn((prev) => !prev);
+    if (!localTracks) return;
+    const newCameraOn = !isCameraOn;
+    setIsCameraOn(newCameraOn);
+    if (newCameraOn && !localTracks[1] && selectedCamera) {
+      const cameraTrack = await (await import('agora-rtc-sdk-ng')).default.createCameraVideoTrack({
+        cameraId: selectedCamera,
+      });
+      localTracks[1] = cameraTrack;
+      setLocalTracks([...localTracks]);
+      await client.publish(cameraTrack);
+      if (videoRefs.current[user?.id!]) cameraTrack.play(videoRefs.current[user?.id!]);
+    } else if (!newCameraOn && localTracks[1]) {
+      await client.unpublish(localTracks[1]);
+      localTracks[1].close();
+      localTracks[1] = null;
+      setLocalTracks([...localTracks]);
+    }
   };
-  // Toggle mic (on/off)
+
   const handleMicToggle = async () => {
-    setIsMicOn((prev) => !prev);
+    if (!localTracks) return;
+    const newMicOn = !isMicOn;
+    setIsMicOn(newMicOn);
+    if (newMicOn && !localTracks[0] && selectedMicrophone) {
+      const micTrack = await (await import('agora-rtc-sdk-ng')).default.createMicrophoneAudioTrack({
+        microphoneId: selectedMicrophone,
+      });
+      localTracks[0] = micTrack;
+      setLocalTracks([...localTracks]);
+      await client.publish(micTrack);
+    } else if (!newMicOn && localTracks[0]) {
+      await client.unpublish(localTracks[0]);
+      localTracks[0].close();
+      localTracks[0] = null;
+      setLocalTracks([...localTracks]);
+    }
   };
 
-  // Change camera device
-  const handleCameraChange = (e: any) => {
-    setSelectedCameraId(e.target.value);
-  };
-  // Change mic device
-  const handleMicChange = (e: any) => {
-    setSelectedMicId(e.target.value);
-  };
-
-  if (!joined) return <Loader />;
+  if (!joined || !user) return <Loader />;
 
   return (
-    <section className="relative h-screen w-full overflow-hidden pt-4 text-white">
+    <section className="relative h-screen w-full overflow-hidden pt-4 text-white bg-dark-2">
       <div className="relative flex size-full items-center justify-center">
-        <div className="flex size-full max-w-[1000px] items-center gap-4">
-          {/* Local Video or Profile */}
-          <div
-            ref={(el) => user?.id && (videoRefs.current[user.id] = el)}
-            className="w-80 h-56 bg-black rounded-lg flex items-center justify-center relative"
-          >
-            {(!isCameraOn || !localTracks?.[1]) && user?.imageUrl && (
-              <img
-                src={user.imageUrl}
-                alt="profile"
-                className="w-24 h-24 rounded-full object-cover"
-                style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)" }}
-              />
+        <div className="flex size-full max-w-[1000px] items-center gap-4 flex-wrap">
+          {/* Local Video */}
+          <div className="relative w-80 h-56 bg-black rounded-lg overflow-hidden">
+            <div
+              ref={(el) => (videoRefs.current[user.id] = el)}
+              className="w-full h-full"
+            />
+            {!isCameraOn && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-dark-3">
+                <img
+                  src={user.imageUrl}
+                  alt="Profile"
+                  className="w-16 h-16 rounded-full mb-2"
+                />
+                <span className="text-white">{user.username || user.id} (You)</span>
+                <span className="text-xs bg-green-500 text-white px-2 py-1 rounded mt-1">Host</span>
+              </div>
             )}
+            <span className="absolute bottom-2 left-2 text-sm bg-dark-1 bg-opacity-70 px-2 py-1 rounded">
+              {user.username || user.id} (You)
+            </span>
           </div>
           {/* Remote Videos */}
           {remoteUsers.map((remoteUser) => (
             <div
               key={remoteUser.uid}
-              ref={(el) => (videoRefs.current[remoteUser.uid] = el)}
-              className="w-80 h-56 bg-black rounded-lg"
-            />
+              className="relative w-80 h-56 bg-black rounded-lg overflow-hidden"
+            >
+              <div
+                ref={(el) => (videoRefs.current[remoteUser.uid] = el)}
+                className="w-full h-full"
+              />
+              <span className="absolute bottom-2 left-2 text-sm bg-dark-1 bg-opacity-70 px-2 py-1 rounded">
+                User {remoteUser.uid}
+              </span>
+            </div>
           ))}
         </div>
         <div
@@ -188,70 +219,113 @@ const MeetingRoom = ({
             'show-block': showParticipants,
           })}
         >
-          {/* Participants List */}
-          <ul>
-            <li className="text-lg font-bold mb-2">Participants</li>
-            <li>{user?.username || user?.id} (You)</li>
-            {remoteUsers.map((u) => (
-              <li key={u.uid}>{u.uid}</li>
-            ))}
-          </ul>
+          <div className="bg-dark-1 p-4 rounded h-full overflow-y-auto">
+            <ul>
+              <li className="text-lg font-bold mb-2">Participants</li>
+              <li className="flex items-center gap-2">
+                <img src={user.imageUrl} alt="Profile" className="w-8 h-8 rounded-full" />
+                {user.username || user.id} (You, Host)
+              </li>
+              {remoteUsers.map((u) => (
+                <li key={u.uid}>User {u.uid}</li>
+              ))}
+            </ul>
+          </div>
         </div>
       </div>
-      {/* Toolbar */}
-      <div className="fixed bottom-0 flex w-full items-center justify-center gap-3 pb-4">
+      <div className="fixed bottom-0 flex w-full items-center justify-center gap-5 bg-dark-1 py-4">
         <button
           onClick={handleCameraToggle}
-          className={`p-3 rounded-full ${isCameraOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'}`}
-          aria-label={isCameraOn ? 'Turn camera off' : 'Turn camera on'}
+          className={cn(
+            'p-3 rounded-full transition',
+            isCameraOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'
+          )}
         >
-          {isCameraOn ? <Video size={24} /> : <VideoOff size={24} className="text-red-500" />}
+          {isCameraOn ? <Video className="text-white" size={24} /> : <VideoOff className="text-red-500" size={24} />}
         </button>
         <button
           onClick={handleMicToggle}
-          className={`p-3 rounded-full ${isMicOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'}`}
-          aria-label={isMicOn ? 'Turn mic off' : 'Turn mic on'}
+          className={cn(
+            'p-3 rounded-full transition',
+            isMicOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'
+          )}
         >
-          {isMicOn ? <Mic size={24} /> : <MicOff size={24} className="text-red-500" />}
+          {isMicOn ? <Mic className="text-white" size={24} /> : <MicOff className="text-red-500" size={24} />}
         </button>
-        <button
-          onClick={() => setShowSettings((s) => !s)}
-          className="p-3 rounded-full bg-dark-3 hover:bg-dark-4"
-          aria-label="Device settings"
-        >
-          <Settings size={24} />
-        </button>
-        <button onClick={() => setShowParticipants((prev) => !prev)} className="p-3 rounded-full bg-dark-3 hover:bg-dark-4">
-          <Users size={24} />
-        </button>
-        <Button onClick={() => router.push(`/`)} className="rounded-full bg-red-600 p-3 ml-4">
-          <LogOut size={24} />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="p-3 rounded-full bg-dark-3 hover:bg-dark-4 transition">
+              <Settings className="text-white" size={24} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="bg-dark-1 text-white border-dark-3">
+            <div className="p-2">
+              <label className="block text-sm font-medium mb-1">Camera</label>
+              {devices.cameras.map((camera) => (
+                <DropdownMenuItem
+                  key={camera.deviceId}
+                  onClick={async () => {
+                    setSelectedCamera(camera.deviceId);
+                    if (isCameraOn && localTracks && localTracks[1]) {
+                      await client.unpublish(localTracks[1]);
+                      localTracks[1].close();
+                      const newCameraTrack = await (await import('agora-rtc-sdk-ng')).default.createCameraVideoTrack({
+                        cameraId: camera.deviceId,
+                      });
+                      localTracks[1] = newCameraTrack;
+                      setLocalTracks([...localTracks]);
+                      await client.publish(newCameraTrack);
+                      if (videoRefs.current[user.id]) newCameraTrack.play(videoRefs.current[user.id]);
+                    }
+                  }}
+                  className={cn(
+                    'cursor-pointer',
+                    selectedCamera === camera.deviceId && 'bg-dark-3'
+                  )}
+                >
+                  {camera.label || `Camera ${camera.deviceId}`}
+                </DropdownMenuItem>
+              ))}
+            </div>
+            <div className="p-2">
+              <label className="block text-sm font-medium mb-1">Microphone</label>
+              {devices.microphones.map((mic) => (
+                <DropdownMenuItem
+                  key={mic.deviceId}
+                  onClick={async () => {
+                    setSelectedMicrophone(mic.deviceId);
+                    if (isMicOn && localTracks && localTracks[0]) {
+                      await client.unpublish(localTracks[0]);
+                      localTracks[0].close();
+                      const newMicTrack = await (await import('agora-rtc-sdk-ng')).default.createMicrophoneAudioTrack({
+                        microphoneId: mic.deviceId,
+                      });
+                      localTracks[0] = newMicTrack;
+                      setLocalTracks([...localTracks]);
+                      await client.publish(newMicTrack);
+                    }
+                  }}
+                  className={cn(
+                    'cursor-pointer',
+                    selectedMicrophone === mic.deviceId && 'bg-dark-3'
+                  )}
+                >
+                  {mic.label || `Microphone ${mic.deviceId}`}
+                </DropdownMenuItem>
+              ))}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button onClick={() => router.push('/')} className="bg-red-500 hover:bg-red-600">
+          Leave Call
         </Button>
+        <button
+          onClick={() => setShowParticipants((prev) => !prev)}
+          className="p-3 rounded-full bg-dark-3 hover:bg-dark-4 transition"
+        >
+          <Users className="text-white" size={24} />
+        </button>
       </div>
-      {showSettings && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-dark-3 rounded p-4 flex flex-col gap-2 w-80 z-50">
-          <label className="font-semibold">Camera:</label>
-          <select
-            className="bg-dark-4 py-1 px-2 rounded"
-            value={selectedCameraId}
-            onChange={handleCameraChange}
-          >
-            {cameraDevices.map((d: any) => (
-              <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId}`}</option>
-            ))}
-          </select>
-          <label className="font-semibold mt-2">Microphone:</label>
-          <select
-            className="bg-dark-4 py-1 px-2 rounded"
-            value={selectedMicId}
-            onChange={handleMicChange}
-          >
-            {micDevices.map((d: any) => (
-              <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${d.deviceId}`}</option>
-            ))}
-          </select>
-        </div>
-      )}
     </section>
   );
 };
