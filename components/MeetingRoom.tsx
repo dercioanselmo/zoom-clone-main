@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState, useContext } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useUser } from '@clerk/nextjs';
 import { Button } from './ui/button';
-import { Users } from 'lucide-react';
+import { Video, VideoOff, Mic, MicOff, Settings, Users, LogOut } from 'lucide-react';
 import { AgoraContext } from '@/providers/AgoraClientProvider';
 import Loader from './Loader';
 import { cn } from '@/lib/utils';
@@ -17,14 +17,44 @@ const MeetingRoom = ({
   token: string;
 }) => {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { user } = useUser();
   const { client } = useContext(AgoraContext)!;
   const [joined, setJoined] = useState(false);
   const [localTracks, setLocalTracks] = useState<[any, any] | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<any[]>([]);
-  const videoRefs = useRef<{ [uid: string]: HTMLDivElement | null }>({});
+  const [isCameraOn, setIsCameraOn] = useState(true);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [cameraDevices, setCameraDevices] = useState<any[]>([]);
+  const [micDevices, setMicDevices] = useState<any[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string | undefined>(undefined);
+  const [selectedMicId, setSelectedMicId] = useState<string | undefined>(undefined);
+  const [showSettings, setShowSettings] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
+
+  const videoRefs = useRef<{ [uid: string]: HTMLDivElement | null }>({});
+  const localVideoRef = useRef<HTMLDivElement>(null);
+
+  // Device enumeration
+  useEffect(() => {
+    let AgoraRTC: any;
+    const fetchDevices = async () => {
+      try {
+        const mod = await import('agora-rtc-sdk-ng');
+        AgoraRTC = mod.default;
+        const devices = await AgoraRTC.getDevices();
+        setCameraDevices(devices.filter((d: any) => d.kind === 'videoinput'));
+        setMicDevices(devices.filter((d: any) => d.kind === 'audioinput'));
+        if (!selectedCameraId && devices.find((d: any) => d.kind === 'videoinput')) {
+          setSelectedCameraId(devices.find((d: any) => d.kind === 'videoinput').deviceId);
+        }
+        if (!selectedMicId && devices.find((d: any) => d.kind === 'audioinput')) {
+          setSelectedMicId(devices.find((d: any) => d.kind === 'audioinput').deviceId);
+        }
+      } catch {}
+    };
+    fetchDevices();
+    // eslint-disable-next-line
+  }, []);
 
   // Join and setup tracks - client-only!
   useEffect(() => {
@@ -32,25 +62,28 @@ const MeetingRoom = ({
 
     let disposed = false;
     let localTracksInner: [any, any] = [null, null];
+    let AgoraRTC: any;
 
     const join = async () => {
       try {
-        // Dynamic import ensures client-side only
-        const { default: AgoraRTC } = await import('agora-rtc-sdk-ng');
-        const [microphoneTrack, cameraTrack] = await Promise.all([
-          AgoraRTC.createMicrophoneAudioTrack(),
-          AgoraRTC.createCameraVideoTrack(),
-        ]);
-        if (disposed) {
-          microphoneTrack.close();
-          cameraTrack.close();
-          return;
+        const mod = await import('agora-rtc-sdk-ng');
+        AgoraRTC = mod.default;
+        if (isCameraOn && selectedCameraId) {
+          localTracksInner[1] = await AgoraRTC.createCameraVideoTrack({ cameraId: selectedCameraId });
+        } else {
+          localTracksInner[1] = null;
         }
-        localTracksInner = [microphoneTrack, cameraTrack];
+        if (isMicOn && selectedMicId) {
+          localTracksInner[0] = await AgoraRTC.createMicrophoneAudioTrack({ microphoneId: selectedMicId });
+        } else {
+          localTracksInner[0] = null;
+        }
+        // Remove nulls for publish
+        const tracksToPublish = localTracksInner.filter(Boolean);
         setLocalTracks(localTracksInner);
 
         await client.join(process.env.NEXT_PUBLIC_AGORA_APP_ID!, channel, token, user.id);
-        await client.publish(localTracksInner);
+        if (tracksToPublish.length) await client.publish(tracksToPublish);
         setJoined(true);
       } catch (e) {
         // Handle error (optionally show toast)
@@ -82,11 +115,11 @@ const MeetingRoom = ({
       setRemoteUsers([]);
     };
     // eslint-disable-next-line
-  }, [client, channel, token, user?.id]);
+  }, [client, channel, token, user?.id, isCameraOn, isMicOn, selectedCameraId, selectedMicId]);
 
   // Play local video
   useEffect(() => {
-    if (localTracks && user?.id && videoRefs.current[user.id]) {
+    if (localTracks && user?.id && videoRefs.current[user.id] && localTracks[1]) {
       localTracks[1].play(videoRefs.current[user.id]);
     }
   }, [localTracks, user?.id]);
@@ -103,17 +136,44 @@ const MeetingRoom = ({
     });
   }, [remoteUsers]);
 
+  // Toggle camera (on/off)
+  const handleCameraToggle = async () => {
+    setIsCameraOn((prev) => !prev);
+  };
+  // Toggle mic (on/off)
+  const handleMicToggle = async () => {
+    setIsMicOn((prev) => !prev);
+  };
+
+  // Change camera device
+  const handleCameraChange = (e: any) => {
+    setSelectedCameraId(e.target.value);
+  };
+  // Change mic device
+  const handleMicChange = (e: any) => {
+    setSelectedMicId(e.target.value);
+  };
+
   if (!joined) return <Loader />;
 
   return (
     <section className="relative h-screen w-full overflow-hidden pt-4 text-white">
       <div className="relative flex size-full items-center justify-center">
         <div className="flex size-full max-w-[1000px] items-center gap-4">
-          {/* Local Video */}
+          {/* Local Video or Profile */}
           <div
             ref={(el) => user?.id && (videoRefs.current[user.id] = el)}
-            className="w-80 h-56 bg-black rounded-lg"
-          />
+            className="w-80 h-56 bg-black rounded-lg flex items-center justify-center relative"
+          >
+            {(!isCameraOn || !localTracks?.[1]) && user?.imageUrl && (
+              <img
+                src={user.imageUrl}
+                alt="profile"
+                className="w-24 h-24 rounded-full object-cover"
+                style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)" }}
+              />
+            )}
+          </div>
           {/* Remote Videos */}
           {remoteUsers.map((remoteUser) => (
             <div
@@ -138,17 +198,60 @@ const MeetingRoom = ({
           </ul>
         </div>
       </div>
-      {/* video layout and call controls */}
-      <div className="fixed bottom-0 flex w-full items-center justify-center gap-5">
-        <Button onClick={() => router.push(`/`)} className="bg-dark-4">
-          Leave Call
-        </Button>
-        <button onClick={() => setShowParticipants((prev) => !prev)}>
-          <div className="cursor-pointer rounded-2xl bg-[#19232d] px-4 py-2 hover:bg-[#4c535b]">
-            <Users size={20} className="text-white" />
-          </div>
+      {/* Toolbar */}
+      <div className="fixed bottom-0 flex w-full items-center justify-center gap-3 pb-4">
+        <button
+          onClick={handleCameraToggle}
+          className={`p-3 rounded-full ${isCameraOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'}`}
+          aria-label={isCameraOn ? 'Turn camera off' : 'Turn camera on'}
+        >
+          {isCameraOn ? <Video size={24} /> : <VideoOff size={24} className="text-red-500" />}
         </button>
+        <button
+          onClick={handleMicToggle}
+          className={`p-3 rounded-full ${isMicOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'}`}
+          aria-label={isMicOn ? 'Turn mic off' : 'Turn mic on'}
+        >
+          {isMicOn ? <Mic size={24} /> : <MicOff size={24} className="text-red-500" />}
+        </button>
+        <button
+          onClick={() => setShowSettings((s) => !s)}
+          className="p-3 rounded-full bg-dark-3 hover:bg-dark-4"
+          aria-label="Device settings"
+        >
+          <Settings size={24} />
+        </button>
+        <button onClick={() => setShowParticipants((prev) => !prev)} className="p-3 rounded-full bg-dark-3 hover:bg-dark-4">
+          <Users size={24} />
+        </button>
+        <Button onClick={() => router.push(`/`)} className="rounded-full bg-red-600 p-3 ml-4">
+          <LogOut size={24} />
+        </Button>
       </div>
+      {showSettings && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-dark-3 rounded p-4 flex flex-col gap-2 w-80 z-50">
+          <label className="font-semibold">Camera:</label>
+          <select
+            className="bg-dark-4 py-1 px-2 rounded"
+            value={selectedCameraId}
+            onChange={handleCameraChange}
+          >
+            {cameraDevices.map((d: any) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId}`}</option>
+            ))}
+          </select>
+          <label className="font-semibold mt-2">Microphone:</label>
+          <select
+            className="bg-dark-4 py-1 px-2 rounded"
+            value={selectedMicId}
+            onChange={handleMicChange}
+          >
+            {micDevices.map((d: any) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${d.deviceId}`}</option>
+            ))}
+          </select>
+        </div>
+      )}
     </section>
   );
 };
