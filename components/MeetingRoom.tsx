@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useContext } from 'react';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useUser } from '@clerk/nextjs';
 import { Button } from './ui/button';
 import { Users } from 'lucide-react';
@@ -26,18 +26,26 @@ const MeetingRoom = ({
   const videoRefs = useRef<{ [uid: string]: HTMLDivElement | null }>({});
   const [showParticipants, setShowParticipants] = useState(false);
 
+  // Join and setup tracks - client-only!
   useEffect(() => {
     if (!client || !user) return;
 
-    let mounted = true;
+    let disposed = false;
     let localTracksInner: [any, any] = [null, null];
 
     const join = async () => {
       try {
+        // Dynamic import ensures client-side only
+        const { default: AgoraRTC } = await import('agora-rtc-sdk-ng');
         const [microphoneTrack, cameraTrack] = await Promise.all([
-          await window.AgoraRTC.createMicrophoneAudioTrack(),
-          await window.AgoraRTC.createCameraVideoTrack(),
+          AgoraRTC.createMicrophoneAudioTrack(),
+          AgoraRTC.createCameraVideoTrack(),
         ]);
+        if (disposed) {
+          microphoneTrack.close();
+          cameraTrack.close();
+          return;
+        }
         localTracksInner = [microphoneTrack, cameraTrack];
         setLocalTracks(localTracksInner);
 
@@ -45,13 +53,14 @@ const MeetingRoom = ({
         await client.publish(localTracksInner);
         setJoined(true);
       } catch (e) {
-        // Handle error
+        // Handle error (optionally show toast)
+        console.error('Agora join error:', e);
       }
     };
 
     join();
 
-    // remote users events
+    // remote user events
     const handleUserPublished = async (remoteUser: any, mediaType: any) => {
       await client.subscribe(remoteUser, mediaType);
       setRemoteUsers(Array.from(client.remoteUsers));
@@ -64,6 +73,7 @@ const MeetingRoom = ({
     client.on('user-left', handleUserLeft);
 
     return () => {
+      disposed = true;
       if (localTracksInner) localTracksInner.forEach((track) => track && track.close());
       client.removeAllListeners();
       client.leave();
@@ -76,10 +86,9 @@ const MeetingRoom = ({
 
   // Play local video
   useEffect(() => {
-    if (localTracks && videoRefs.current[user?.id]) {
+    if (localTracks && user?.id && videoRefs.current[user.id]) {
       localTracks[1].play(videoRefs.current[user.id]);
     }
-    // eslint-disable-next-line
   }, [localTracks, user?.id]);
 
   // Play remote videos
@@ -92,7 +101,6 @@ const MeetingRoom = ({
         remoteUser.videoTrack.play(videoRefs.current[remoteUser.uid]);
       }
     });
-    // eslint-disable-next-line
   }, [remoteUsers]);
 
   if (!joined) return <Loader />;
@@ -103,7 +111,7 @@ const MeetingRoom = ({
         <div className="flex size-full max-w-[1000px] items-center gap-4">
           {/* Local Video */}
           <div
-            ref={(el) => (videoRefs.current[user?.id as string] = el)}
+            ref={(el) => user?.id && (videoRefs.current[user.id] = el)}
             className="w-80 h-56 bg-black rounded-lg"
           />
           {/* Remote Videos */}
