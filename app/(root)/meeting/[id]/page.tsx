@@ -1,47 +1,65 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useUser } from '@clerk/nextjs';
-import { StreamCall, StreamTheme } from '@stream-io/video-react-sdk';
 import { useParams } from 'next/navigation';
-import { Loader } from 'lucide-react';
-
-import { useGetCallById } from '@/hooks/useGetCallById';
+import Loader from '@/components/Loader';
 import Alert from '@/components/Alert';
 import MeetingSetup from '@/components/MeetingSetup';
 import MeetingRoom from '@/components/MeetingRoom';
 
+const fetchAgoraToken = async (channel: string, uid: string) => {
+  const res = await fetch('/api/agora-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channelName: channel, uid }),
+  });
+  if (!res.ok) throw new Error('Failed to get token');
+  const data = await res.json();
+  return data.token as string;
+};
+
 const MeetingPage = () => {
   const { id } = useParams();
   const { isLoaded, user } = useUser();
-  const { call, isCallLoading } = useGetCallById(id);
   const [isSetupComplete, setIsSetupComplete] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [tokenLoading, setTokenLoading] = useState(true);
 
-  if (!isLoaded || isCallLoading) return <Loader />;
+  useEffect(() => {
+    if (!user || !id) return;
+    let cancelled = false;
+    setTokenLoading(true);
+    fetchAgoraToken(id as string, user.id)
+      .then((tk) => {
+        if (!cancelled) setToken(tk);
+      })
+      .catch(() => {
+        if (!cancelled) setToken(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTokenLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, id]);
 
-  if (!call) return (
+  if (!isLoaded || tokenLoading) return <Loader />;
+
+  if (!token) return (
     <p className="text-center text-3xl font-bold text-white">
-      Call Not Found
+      Failed to get token
     </p>
   );
 
-  // get more info about custom call type:  https://getstream.io/video/docs/react/guides/configuring-call-types/
-  const notAllowed = call.type === 'invited' && (!user || !call.state.members.find((m) => m.user.id === user.id));
-
-  if (notAllowed) return <Alert title="You are not allowed to join this meeting" />;
-
   return (
     <main className="h-screen w-full">
-      <StreamCall call={call}>
-        <StreamTheme>
-
-        {!isSetupComplete ? (
-          <MeetingSetup setIsSetupComplete={setIsSetupComplete} />
-        ) : (
-          <MeetingRoom />
-        )}
-        </StreamTheme>
-      </StreamCall>
+      {!isSetupComplete ? (
+        <MeetingSetup setIsSetupComplete={setIsSetupComplete} channel={id as string} token={token} />
+      ) : (
+        <MeetingRoom channel={id as string} token={token} />
+      )}
     </main>
   );
 };

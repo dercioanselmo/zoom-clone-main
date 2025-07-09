@@ -1,86 +1,72 @@
 'use client';
-import { useEffect, useState } from 'react';
-import {
-  DeviceSettings,
-  VideoPreview,
-  useCall,
-  useCallStateHooks,
-} from '@stream-io/video-react-sdk';
 
-import Alert from './Alert';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
 
 const MeetingSetup = ({
   setIsSetupComplete,
+  channel,
+  token,
 }: {
   setIsSetupComplete: (value: boolean) => void;
+  channel: string;
+  token: string;
 }) => {
-  // https://getstream.io/video/docs/react/guides/call-and-participant-state/#call-state
-  const { useCallEndedAt, useCallStartsAt } = useCallStateHooks();
-  const callStartsAt = useCallStartsAt();
-  const callEndedAt = useCallEndedAt();
-  const callTimeNotArrived =
-    callStartsAt && new Date(callStartsAt) > new Date();
-  const callHasEnded = !!callEndedAt;
-
-  const call = useCall();
-
-  if (!call) {
-    throw new Error(
-      'useStreamCall must be used within a StreamCall component.',
-    );
-  }
-
-  // https://getstream.io/video/docs/react/ui-cookbook/replacing-call-controls/
-  const [isMicCamToggled, setIsMicCamToggled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLDivElement>(null);
+  const cameraTrackRef = useRef<any>(null);
 
   useEffect(() => {
-    if (isMicCamToggled) {
-      call.camera.disable();
-      call.microphone.disable();
-    } else {
-      call.camera.enable();
-      call.microphone.enable();
-    }
-  }, [isMicCamToggled, call.camera, call.microphone]);
+    let disposed = false;
+    // Dynamically import AgoraRTC only on client
+    import('agora-rtc-sdk-ng').then(({ default: AgoraRTC }) => {
+      AgoraRTC.createCameraVideoTrack()
+        .then((track) => {
+          if (disposed) {
+            track.close();
+            return;
+          }
+          cameraTrackRef.current = track;
+          if (videoRef.current) {
+            track.play(videoRef.current);
+          }
+          setLoading(false);
+        })
+        // eslint-disable-next-line n/handle-callback-err
+        .catch((err) => {
+          setPreviewError('Unable to access camera. Please check permissions or connect a camera.');
+          setLoading(false);
+        });
+    });
 
-  if (callTimeNotArrived)
-    return (
-      <Alert
-        title={`Your Meeting has not started yet. It is scheduled for ${callStartsAt.toLocaleString()}`}
-      />
-    );
+    return () => {
+      disposed = true;
+      if (cameraTrackRef.current) {
+        cameraTrackRef.current.close();
+        cameraTrackRef.current = null;
+      }
+    };
+  }, []);
 
-  if (callHasEnded)
-    return (
-      <Alert
-        title="The call has been ended by the host"
-        iconUrl="/icons/call-ended.svg"
-      />
-    );
+  const handleJoin = () => {
+    setIsSetupComplete(true);
+  };
 
   return (
     <div className="flex h-screen w-full flex-col items-center justify-center gap-3 text-white">
       <h1 className="text-center text-2xl font-bold">Setup</h1>
-      <VideoPreview />
-      <div className="flex h-16 items-center justify-center gap-3">
-        <label className="flex items-center justify-center gap-2 font-medium">
-          <input
-            type="checkbox"
-            checked={isMicCamToggled}
-            onChange={(e) => setIsMicCamToggled(e.target.checked)}
-          />
-          Join with mic and camera off
-        </label>
-        <DeviceSettings />
+      <div
+        ref={videoRef}
+        className="flex h-56 w-96 items-center justify-center bg-black rounded-xl mb-4 overflow-hidden"
+      >
+        {loading && <span className="text-sky-1">Loading camera...</span>}
+        {previewError && <span className="text-red-400">{previewError}</span>}
       </div>
       <Button
         className="rounded-md bg-green-500 px-4 py-2.5"
-        onClick={() => {
-          call.join();
-
-          setIsSetupComplete(true);
-        }}
+        onClick={handleJoin}
+        disabled={loading || !!previewError}
       >
         Join meeting
       </Button>

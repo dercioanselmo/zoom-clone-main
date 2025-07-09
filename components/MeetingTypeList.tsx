@@ -1,12 +1,9 @@
-/* eslint-disable camelcase */
 'use client';
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-
 import HomeCard from './HomeCard';
 import MeetingModal from './MeetingModal';
-import { Call, useStreamVideoClient } from '@stream-io/video-react-sdk';
 import { useUser } from '@clerk/nextjs';
 import Loader from './Loader';
 import { Textarea } from './ui/textarea';
@@ -26,35 +23,26 @@ const MeetingTypeList = () => {
     'isScheduleMeeting' | 'isJoiningMeeting' | 'isInstantMeeting' | undefined
   >(undefined);
   const [values, setValues] = useState(initialValues);
-  const [callDetail, setCallDetail] = useState<Call>();
-  const client = useStreamVideoClient();
-  const { user } = useUser();
+  const [meetingId, setMeetingId] = useState<string | null>(null);
+  const [channelName, setChannelName] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const { user, isLoaded } = useUser();
   const { toast } = useToast();
 
   const createMeeting = async () => {
-    if (!client || !user) return;
+    if (!user) return;
     try {
-      if (!values.dateTime) {
-        toast({ title: 'Please select a date and time' });
-        return;
+      setLoading(true);
+      let id = crypto.randomUUID();
+      if (!values.description && meetingState === 'isInstantMeeting') {
+        setValues((prev) => ({ ...prev, description: 'Instant Meeting' }));
       }
-      const id = crypto.randomUUID();
-      const call = client.call('default', id);
-      if (!call) throw new Error('Failed to create meeting');
-      const startsAt =
-        values.dateTime.toISOString() || new Date(Date.now()).toISOString();
-      const description = values.description || 'Instant Meeting';
-      await call.getOrCreate({
-        data: {
-          starts_at: startsAt,
-          custom: {
-            description,
-          },
-        },
-      });
-      setCallDetail(call);
+      setMeetingId(id);
+      setChannelName(id);
+
+      // Redirect for instant meeting
       if (!values.description) {
-        router.push(`/meeting/${call.id}`);
+        router.push(`/meeting/${id}`);
       }
       toast({
         title: 'Meeting Created',
@@ -62,12 +50,14 @@ const MeetingTypeList = () => {
     } catch (error) {
       console.error(error);
       toast({ title: 'Failed to create Meeting' });
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (!client || !user) return <Loader />;
+  if (!isLoaded || !user) return <Loader />;
 
-  const meetingLink = `${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${callDetail?.id}`;
+  const meetingLink = `${process.env.NEXT_PUBLIC_BASE_URL}/meeting/${meetingId}`;
 
   return (
     <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
@@ -99,7 +89,7 @@ const MeetingTypeList = () => {
         handleClick={() => router.push('/recordings')}
       />
 
-      {!callDetail ? (
+      {!meetingId ? (
         <MeetingModal
           isOpen={meetingState === 'isScheduleMeeting'}
           onClose={() => setMeetingState(undefined)}

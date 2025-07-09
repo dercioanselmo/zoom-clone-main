@@ -1,10 +1,7 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
-import { useStreamVideoClient } from "@stream-io/video-react-sdk";
 import { useRouter } from "next/navigation";
-
-import { useGetCallById } from "@/hooks/useGetCallById";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -30,26 +27,12 @@ const Table = ({
 const PersonalRoom = () => {
   const router = useRouter();
   const { user } = useUser();
-  const client = useStreamVideoClient();
   const { toast } = useToast();
 
   const meetingId = user?.id;
 
-  const { call } = useGetCallById(meetingId!);
-
   const startRoom = async () => {
-    if (!client || !user) return;
-
-    const newCall = client.call("default", meetingId!);
-
-    if (!call) {
-      await newCall.getOrCreate({
-        data: {
-          starts_at: new Date().toISOString(),
-        },
-      });
-    }
-
+    if (!user) return;
     router.push(`/meeting/${meetingId}?personal=true`);
   };
 
