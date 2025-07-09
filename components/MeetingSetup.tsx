@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
+import { Video, VideoOff, Mic, MicOff } from 'lucide-react';
 
 const MeetingSetup = ({
   setIsSetupComplete,
@@ -21,7 +22,6 @@ const MeetingSetup = ({
   const cameraTrackRef = useRef<any>(null);
   const micTrackRef = useRef<any>(null);
 
-  // Camera/mic effect
   useEffect(() => {
     let disposed = false;
     let AgoraRTC: any;
@@ -29,21 +29,24 @@ const MeetingSetup = ({
     const setupTracks = async () => {
       setLoading(true);
       try {
-        // Import AgoraRTC dynamically
         const mod = await import('agora-rtc-sdk-ng');
         AgoraRTC = mod.default;
-        // Create camera & mic tracks if enabled
         if (isCameraOn) {
           cameraTrackRef.current = await AgoraRTC.createCameraVideoTrack();
         } else {
-          cameraTrackRef.current = null;
+          if (cameraTrackRef.current) {
+            cameraTrackRef.current.close();
+            cameraTrackRef.current = null;
+          }
         }
         if (isMicOn) {
           micTrackRef.current = await AgoraRTC.createMicrophoneAudioTrack();
         } else {
-          micTrackRef.current = null;
+          if (micTrackRef.current) {
+            micTrackRef.current.close();
+            micTrackRef.current = null;
+          }
         }
-        // Play camera if on
         if (!disposed && isCameraOn && cameraTrackRef.current && videoRef.current) {
           cameraTrackRef.current.play(videoRef.current);
         }
@@ -67,22 +70,18 @@ const MeetingSetup = ({
         micTrackRef.current = null;
       }
     };
-    // Re-run when toggling cam/mic
     // eslint-disable-next-line
   }, [isCameraOn, isMicOn]);
 
-  // Toggle camera on/off
   const handleCameraToggle = () => {
     setIsCameraOn((prev) => !prev);
   };
 
-  // Toggle mic on/off
   const handleMicToggle = () => {
     setIsMicOn((prev) => !prev);
   };
 
   const handleJoin = () => {
-    // Optionally: Pass the status of camera/mic to the meeting room via context or URL params if you want
     setIsSetupComplete(true);
   };
 
@@ -100,22 +99,36 @@ const MeetingSetup = ({
         {previewError && <span className="text-red-400">{previewError}</span>}
       </div>
       <div className="flex gap-8 mb-2">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={isCameraOn}
-            onChange={handleCameraToggle}
-          />
-          Camera
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={isMicOn}
-            onChange={handleMicToggle}
-          />
-          Microphone
-        </label>
+        <button
+          type="button"
+          onClick={handleCameraToggle}
+          className={`flex items-center gap-2 px-4 py-2 rounded transition 
+            ${isCameraOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'}
+          `}
+          aria-label={isCameraOn ? 'Turn camera off' : 'Turn camera on'}
+        >
+          {isCameraOn ? (
+            <Video className="text-white" size={24} />
+          ) : (
+            <VideoOff className="text-red-500" size={24} />
+          )}
+          <span className="hidden sm:inline">{isCameraOn ? 'Camera On' : 'Camera Off'}</span>
+        </button>
+        <button
+          type="button"
+          onClick={handleMicToggle}
+          className={`flex items-center gap-2 px-4 py-2 rounded transition 
+            ${isMicOn ? 'bg-green-700 hover:bg-green-800' : 'bg-dark-3 hover:bg-dark-4'}
+          `}
+          aria-label={isMicOn ? 'Turn mic off' : 'Turn mic on'}
+        >
+          {isMicOn ? (
+            <Mic className="text-white" size={24} />
+          ) : (
+            <MicOff className="text-red-500" size={24} />
+          )}
+          <span className="hidden sm:inline">{isMicOn ? 'Mic On' : 'Mic Off'}</span>
+        </button>
       </div>
       <Button
         className="rounded-md bg-green-500 px-4 py-2.5"
